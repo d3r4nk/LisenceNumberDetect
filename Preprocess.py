@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import math
 
 # Kích thước bộ lọc Gauss để làm mờ ảnh
 GAUSSIAN_SMOOTH_FILTER_SIZE = (5, 5)
@@ -9,7 +8,10 @@ ADAPTIVE_THRESH_BLOCK_SIZE = 19
 ADAPTIVE_THRESH_WEIGHT = 9  
 
 # Tiền xử lý ảnh để tách biển số
-def preprocess(imgOriginal):
+def preprocess(imgOriginal, max_width=1920, max_height=1080):
+    # Resize ảnh trong khi giữ tỷ lệ
+    imgOriginal = resize_image(imgOriginal, max_width, max_height)
+    
     imgGrayscale = extractValue(imgOriginal)  # Chuyển đổi ảnh sang mức xám
     imgMaxContrastGrayscale = maximizeContrast(imgGrayscale)  # Tăng độ tương phản
     height, width = imgGrayscale.shape
@@ -17,6 +19,13 @@ def preprocess(imgOriginal):
     imgBlurred = cv2.GaussianBlur(imgMaxContrastGrayscale, GAUSSIAN_SMOOTH_FILTER_SIZE, 0)  # Làm mịn ảnh
     imgThresh = cv2.adaptiveThreshold(imgBlurred, 255.0, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, ADAPTIVE_THRESH_BLOCK_SIZE, ADAPTIVE_THRESH_WEIGHT)  # Phân ngưỡng thích nghi
     return imgGrayscale, imgThresh
+
+def resize_image(image, max_width=1920, max_height=1080):
+    h, w = image.shape[:2]
+    scale = min(max_width / w, max_height / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    return cv2.resize(image, (new_w, new_h))
 
 # Trích xuất kênh giá trị (độ sáng) từ ảnh HSV
 def extractValue(imgOriginal):

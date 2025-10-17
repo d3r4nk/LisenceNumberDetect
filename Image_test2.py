@@ -1,52 +1,89 @@
-import math  # Thư viện toán học dùng để tính góc quay
-
-import cv2  # Thư viện xử lý ảnh OpenCV
-import numpy as np  # Thư viện xử lý ma trận
-
-import Preprocess  # Module xử lý ảnh grayscale và threshold
-
+import math  
+import cv2  
+import numpy as np  
+import Preprocess  
 # Các hằng số xử lý ảnh
 ADAPTIVE_THRESH_BLOCK_SIZE = 19  # Kích thước khối cho adaptive threshold
 ADAPTIVE_THRESH_WEIGHT = 9  # Trọng số cho adaptive threshold
-
 n = 1  # Biến đếm số lượng biển số tìm thấy
-
 # Ngưỡng diện tích ký tự hợp lệ (tính theo tỷ lệ diện tích vùng biển số)
 Min_char = 0.01
 Max_char = 0.09
-
 # Kích thước ảnh ký tự chuẩn khi resize để nhận dạng
 RESIZED_IMAGE_WIDTH = 20
 RESIZED_IMAGE_HEIGHT = 30
-
 # Đọc và resize ảnh đầu vào
 img = cv2.imread("data/image/3.jpg")
-img = cv2.resize(img, dsize=(1920, 1080))
-
+# Resize ảnh để phù hợp với kích thước mong muốn, với tỷ lệ giữ nguyên
+img = Preprocess.resize_image(img)
 # Load mô hình KNN đã huấn luyện 
 npaClassifications = np.loadtxt("classifications.txt", np.float32)  # Nhãn các ký tự
 npaFlattenedImages = np.loadtxt("flattened_images.txt", np.float32)  # Ảnh ký tự đã flatten
 npaClassifications = npaClassifications.reshape((npaClassifications.size, 1))
 kNearest = cv2.ml.KNearest_create()  # Tạo đối tượng KNN
 kNearest.train(npaFlattenedImages, cv2.ml.ROW_SAMPLE, npaClassifications)  # Huấn luyện
-
 # Tiền xử lý ảnh
 imgGrayscaleplate, imgThreshplate = Preprocess.preprocess(img)  # Xử lý grayscale và threshold
 canny_image = cv2.Canny(imgThreshplate, 250, 255)  # Phát hiện biên Canny
 kernel = np.ones((3, 3), np.uint8)
 dilated_image = cv2.dilate(canny_image, kernel, iterations=1)  # Giãn ảnh để làm rõ biên
-
 # Tìm contour để xác định biển số
 contours, hierarchy = cv2.findContours(dilated_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]  # Chọn 10 contour lớn nhất
+# Hàm phân tích contour
+def analyze_contour(image):
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
 
+    _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if len(contours) == 0:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(contour)
+    aspect_ratio = float(w) / h
+    circularity = 4 * np.pi * cv2.contourArea(contour) / (cv2.arcLength(contour, True) ** 2)
+    
+    return aspect_ratio, circularity 
+# phát hiện ký tự dễ nhầm 
+def detect_ambiguous_char(predicted_label, image):
+    if predicted_label not in ['B', '8', 'U', '0']:
+        return None  
+    result = analyze_contour(image)
+    if result is None:
+        return None
+
+    aspect_ratio, circularity = result  
+
+    if circularity > 0.85:
+        if 0.8 <= aspect_ratio <= 1.2:
+            return '8'
+        elif 0.5 <= aspect_ratio <= 0.8:
+            return '0'
+    else:
+        if 0.8 <= aspect_ratio <= 1.2:
+            return 'B'
+        elif 0.5 <= aspect_ratio <= 0.8:
+            return 'U'
+    return None
+# Hàm nhận dạng ký tự với sửa lỗi
+def classify_image_with_correction(image_vector, image):
+    _, result, _, _ = kNearest.findNearest(np.float32([image_vector]), k=3)
+    predicted_label = chr(int(result[0][0]))
+    detected_char = detect_ambiguous_char(predicted_label, image)
+    if detected_char in ['B', '8', 'U', '0']:
+        _, result_k1, _, _ = kNearest.findNearest(np.float32([image_vector]), k=1)
+        predicted_label = chr(int(result_k1[0][0]))
+    return predicted_label
 screenCnt = []
 for c in contours:
     peri = cv2.arcLength(c, True)  # Tính chu vi contour
     approx = cv2.approxPolyDP(c, 0.06 * peri, True)  # Xấp xỉ đa giác
     [x, y, w, h] = cv2.boundingRect(approx.copy())
     ratio = w / h
-    if (len(approx) == 4):  # Nếu có 4 đỉnh => có thể là biển số
+    if len(approx) == 4:  # Nếu có 4 đỉnh => có thể là biển số
         screenCnt.append(approx)
         cv2.putText(img, str(len(approx.copy())), (x, y), cv2.FONT_HERSHEY_DUPLEX, 2, (0, 255, 0), 3)
 
@@ -55,11 +92,10 @@ if screenCnt is None:
     print("No plate detected")
 else:
     detected = 1
-
+# Kiểm tra và xử lý biển số đã tìm thấy
 if detected == 1:
     for screenCnt in screenCnt:
         cv2.drawContours(img, [screenCnt], -1, (0, 255, 0), 3)  # Vẽ khung biển số
-
         # Tính góc xoay của biển số
         (x1, y1) = screenCnt[0, 0]
         (x2, y2) = screenCnt[1, 0]
@@ -72,7 +108,6 @@ if detected == 1:
         doi = abs(y1 - y2)
         ke = abs(x1 - x2)
         angle = math.atan(doi / ke) * (180.0 / math.pi)  # Tính góc
-
         # Cắt và xoay ảnh biển số cho thẳng góc
         mask = np.zeros(imgGrayscaleplate.shape, np.uint8)
         new_image = cv2.drawContours(mask, [screenCnt], 0, 255, -1)
@@ -83,33 +118,27 @@ if detected == 1:
         roi = img[topx:bottomx, topy:bottomy]  # Cắt ảnh vùng biển số
         imgThresh = imgThreshplate[topx:bottomx, topy:bottomy]  # Cắt ảnh threshold tương ứng
         ptPlateCenter = ((bottomx - topx) / 2, (bottomy - topy) / 2)
-
         # Xác định chiều xoay
         if x1 < x2:
             rotationMatrix = cv2.getRotationMatrix2D(ptPlateCenter, -angle, 1.0)
         else:
             rotationMatrix = cv2.getRotationMatrix2D(ptPlateCenter, angle, 1.0)
-
         # Xoay ảnh
         roi = cv2.warpAffine(roi, rotationMatrix, (bottomy - topy, bottomx - topx))
         imgThresh = cv2.warpAffine(imgThresh, rotationMatrix, (bottomy - topy, bottomx - topx))
         roi = cv2.resize(roi, (0, 0), fx=3, fy=3)
         imgThresh = cv2.resize(imgThresh, (0, 0), fx=3, fy=3)
-
         # Tiền xử lý ký tự
         kerel3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         thre_mor = cv2.morphologyEx(imgThresh, cv2.MORPH_DILATE, kerel3)  # Dilation để nổi bật ký tự
         cont, hier = cv2.findContours(thre_mor, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         cv2.imshow(str(n + 20), thre_mor)
         cv2.drawContours(roi, cont, -1, (100, 255, 255), 2)
-
         # Lọc các ký tự hợp lệ
         char_x_ind = {}
         char_x = []
         height, width, _ = roi.shape
         roiarea = height * width
-
         for ind, cnt in enumerate(cont):
             (x, y, w, h) = cv2.boundingRect(cont[ind])
             ratiochar = w / h
@@ -123,7 +152,6 @@ if detected == 1:
 
         # Nhận dạng ký tự
         char_x = sorted(char_x)
-        strFinalString = ""
         first_line = ""
         second_line = ""
 
@@ -136,21 +164,19 @@ if detected == 1:
             npaROIResized = imgROIResized.reshape((1, RESIZED_IMAGE_WIDTH * RESIZED_IMAGE_HEIGHT))
 
             npaROIResized = np.float32(npaROIResized)
-            _, npaResults, neigh_resp, dists = kNearest.findNearest(npaROIResized, k=3)
-            strCurrentChar = str(chr(int(npaResults[0][0])))  # Chuyển sang ký tự
+            _, npaResults, neigh_resp, dists = kNearest.findNearest(npaROIResized, k=1)
+            strCurrentChar = classify_image_with_correction(npaROIResized[0], imgROIResized)
 
             cv2.putText(roi, strCurrentChar, (x, y + 50), cv2.FONT_HERSHEY_DUPLEX, 2, (255, 255, 0), 3)
 
             if (y < height / 3):
-                first_line = first_line + strCurrentChar
+                first_line += strCurrentChar
             else:
-                second_line = second_line + strCurrentChar
+                second_line += strCurrentChar
 
         print("\n License Plate " + str(n) + " is: " + first_line + " - " + second_line + "\n")
         roi = cv2.resize(roi, None, fx=0.75, fy=0.75)
         cv2.imshow(str(n), cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
-        n = n + 1
-
-
+        n += 1
 
 cv2.waitKey(0)  # Đợi nhấn phím để kết thúc
